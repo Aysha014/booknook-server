@@ -272,7 +272,7 @@ app.patch("/books/:id", async (req, res) => {
 });
 
 
- // API 5: Delete a book
+// API 5: Delete a book
 app.delete("/books/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -305,6 +305,107 @@ app.delete("/books/:id", async (req, res) => {
   }
 });
 
+
+
+
+
+// API 6: Borrow a book
+app.post("/borrows", async (req, res) => {
+  try {
+    const { bookId, userEmail } = req.body;
+
+    if (!bookId || !userEmail) {
+      return res.status(400).json({
+        message: "Book ID and user email are required.",
+      });
+    }
+
+    if (!ObjectId.isValid(bookId)) {
+      return res.status(400).json({
+        message: "Invalid book ID.",
+      });
+    }
+
+    const booksCollection = db.collection("books");
+    const borrowsCollection = db.collection("borrows");
+
+    const book = await booksCollection.findOne({
+      _id: new ObjectId(bookId),
+    });
+
+    if (!book) {
+      return res.status(404).json({
+        message: "Book not found.",
+      });
+    }
+
+    const existingBorrow = await borrowsCollection.findOne({
+      bookId,
+      userEmail,
+    });
+
+    if (existingBorrow) {
+      return res.status(409).json({
+        message: "You already have this book borrowed.",
+      });
+    }
+
+    const updateResult = await booksCollection.updateOne(
+      {
+        _id: new ObjectId(bookId),
+        availableCopies: { $gt: 0 },
+      },
+      {
+        $inc: { availableCopies: -1 },
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(409).json({
+        message: "This book is currently unavailable.",
+      });
+    }
+
+    const borrowDate = new Date();
+    const returnDate = new Date(borrowDate);
+    returnDate.setDate(returnDate.getDate() + 14);
+
+    const newBorrow = {
+      bookId,
+      bookTitle: book.title,
+      bookImage: book.image,
+      userEmail,
+      borrowDate: borrowDate.toISOString(),
+      returnDate: returnDate.toISOString(),
+    };
+
+    try {
+      const result = await borrowsCollection.insertOne(newBorrow);
+
+      res.status(201).json({
+        message: "Book borrowed successfully.",
+        borrow: {
+          ...newBorrow,
+          id: result.insertedId.toString(),
+        },
+      });
+    } catch (error) {
+      // Restore the available copy if saving the borrow fails.
+      await booksCollection.updateOne(
+        { _id: new ObjectId(bookId) },
+        { $inc: { availableCopies: 1 } }
+      );
+
+      throw error;
+    }
+  } catch (error) {
+    console.error("Error borrowing book:", error);
+
+    res.status(500).json({
+      message: "Failed to borrow book.",
+    });
+  }
+});
 
 
 // Local development server
