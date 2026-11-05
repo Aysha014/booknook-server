@@ -3,11 +3,55 @@ import express from "express";
 import "dotenv/config";
 import { MongoClient, ObjectId } from "mongodb";
 import cors from "cors";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const app = express();
 const port = process.env.PORT || 8000;
 
-// Middleware
+// Better Auth JWT verification
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.BETTER_AUTH_URL}/api/auth/jwks`)
+);
+
+async function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({
+      message: "Unauthorized: Token is required",
+    });
+  }
+
+  const token = authHeader.slice(7);
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: process.env.BETTER_AUTH_URL,
+      audience: process.env.BETTER_AUTH_URL,
+    });
+
+    if (!payload.sub || !payload.email) {
+      return res.status(401).json({
+        message: "Invalid user information in token",
+      });
+    }
+
+    req.user = {
+      id: payload.sub,
+      email: payload.email,
+    };
+
+    next();
+  } catch (error) {
+    console.error("JWT verification failed:", error.message);
+
+    return res.status(401).json({
+      message: "Unauthorized: Invalid or expired token",
+    });
+  }
+}
+
+// CORS
 app.use(
   cors({
     origin: [
@@ -63,7 +107,6 @@ app.use(async (req, res, next) => {
   }
 });
 
-
 // API 1: Get all books (Public)
 app.get("/books", async (req, res) => {
   try {
@@ -74,7 +117,6 @@ app.get("/books", async (req, res) => {
       .find()
       .sort({ addedAt: -1 });
 
-    // Apply limit only when a valid limit is requested
     if (Number.isInteger(limit) && limit > 0) {
       query = query.limit(limit);
     }
@@ -130,8 +172,8 @@ app.get("/books/:id", async (req, res) => {
   }
 });
 
-// API 3: Add a new book
-app.post("/books", async (req, res) => {
+// API 3: Add a new book (Protected)
+app.post("/books", verifyToken, async (req, res) => {
   try {
     const {
       title,
@@ -140,20 +182,17 @@ app.post("/books", async (req, res) => {
       image,
       description,
       addedByName,
-      addedByEmail,
       addedAt,
       totalCopies,
       availableCopies,
     } = req.body;
 
     if (
-      !title ||
-      !author ||
+      !title?.trim() ||
+      !author?.trim() ||
       !category ||
-      !image ||
-      !description ||
-      !addedByName ||
-      !addedByEmail
+      !image?.trim() ||
+      !description?.trim()
     ) {
       return res.status(400).json({
         message: "Please provide all required book details.",
@@ -179,8 +218,8 @@ app.post("/books", async (req, res) => {
       image: image.trim(),
       description: description.trim(),
       addedByName,
-      addedByEmail,
-      addedAt,
+      addedByEmail: req.user.email,
+      addedAt: addedAt || new Date().toISOString(),
       totalCopies,
       availableCopies,
     };
@@ -203,15 +242,32 @@ app.post("/books", async (req, res) => {
   }
 });
 
-
-// API 4: Update a book
-app.patch("/books/:id", async (req, res) => {
+// API 4: Update a book (Protected - Owner only)
+app.patch("/books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({
         message: "Invalid book ID",
+      });
+    }
+
+    const booksCollection = db.collection("books");
+
+    const existingBook = await booksCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!existingBook) {
+      return res.status(404).json({
+        message: "Book not found",
+      });
+    }
+
+    if (existingBook.addedByEmail !== req.user.email) {
+      return res.status(403).json({
+        message: "You are not allowed to edit this book.",
       });
     }
 
@@ -249,8 +305,11 @@ app.patch("/books/:id", async (req, res) => {
       });
     }
 
-    const result = await db.collection("books").updateOne(
-      { _id: new ObjectId(id) },
+    const result = await booksCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+        addedByEmail: req.user.email,
+      },
       {
         $set: {
           title: title.trim(),
@@ -266,7 +325,7 @@ app.patch("/books/:id", async (req, res) => {
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
-        message: "Book not found",
+        message: "Book not found or access denied.",
       });
     }
 
@@ -282,9 +341,8 @@ app.patch("/books/:id", async (req, res) => {
   }
 });
 
-
-// API 5: Delete a book
-app.delete("/books/:id", async (req, res) => {
+// API 5: Delete a book (Protected - Owner only)
+app.delete("/books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -296,11 +354,12 @@ app.delete("/books/:id", async (req, res) => {
 
     const result = await db.collection("books").deleteOne({
       _id: new ObjectId(id),
+      addedByEmail: req.user.email,
     });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({
-        message: "Book not found",
+        message: "Book not found or you are not allowed to delete it.",
       });
     }
 
@@ -316,24 +375,15 @@ app.delete("/books/:id", async (req, res) => {
   }
 });
 
-
-
-
-
-// API 6: Borrow a book
-app.post("/borrows", async (req, res) => {
+// API 6: Borrow a book (Protected)
+app.post("/borrows", verifyToken, async (req, res) => {
   try {
-    const { bookId, userEmail } = req.body;
+    const { bookId } = req.body;
+    const userEmail = req.user.email;
 
-    if (!bookId || !userEmail) {
+    if (!bookId || !ObjectId.isValid(bookId)) {
       return res.status(400).json({
-        message: "Book ID and user email are required.",
-      });
-    }
-
-    if (!ObjectId.isValid(bookId)) {
-      return res.status(400).json({
-        message: "Invalid book ID.",
+        message: "Valid book ID is required.",
       });
     }
 
@@ -401,7 +451,6 @@ app.post("/borrows", async (req, res) => {
         },
       });
     } catch (error) {
-      // Restore the available copy if saving the borrow fails.
       await booksCollection.updateOne(
         { _id: new ObjectId(bookId) },
         { $inc: { availableCopies: 1 } }
@@ -418,27 +467,16 @@ app.post("/borrows", async (req, res) => {
   }
 });
 
-
-
-// API 7: Get borrowed books
-app.get("/borrows", async (req, res) => {
-  
+// API 7: Get borrowed books (Protected - Own records only)
+app.get("/borrows", verifyToken, async (req, res) => {
   try {
-    const { userEmail } = req.query;
-
-    if (!userEmail) {
-      return res.status(400).json({
-        message: "User email is required.",
-      });
-    }
-
     const borrows = await db
       .collection("borrows")
-      .find({ userEmail })
+      .find({ userEmail: req.user.email })
       .sort({ borrowDate: -1 })
       .toArray();
 
-    res.send(
+    res.status(200).json(
       borrows.map((borrow) => ({
         ...borrow,
         id: borrow._id.toString(),
@@ -446,14 +484,15 @@ app.get("/borrows", async (req, res) => {
     );
   } catch (error) {
     console.error("Error fetching borrowed books:", error);
+
     res.status(500).json({
       message: "Failed to fetch borrowed books.",
     });
   }
 });
 
-// API 8: Return a borrowed book
-app.delete("/borrows/:id", async (req, res) => {
+// API 8: Return a borrowed book (Protected - Owner only)
+app.delete("/borrows/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -466,23 +505,17 @@ app.delete("/borrows/:id", async (req, res) => {
     const borrowsCollection = db.collection("borrows");
     const booksCollection = db.collection("books");
 
-    const borrow = await borrowsCollection.findOne({
+    // Delete only the authenticated user's borrowing record.
+    const deleteResult = await borrowsCollection.findOneAndDelete({
       _id: new ObjectId(id),
+      userEmail: req.user.email,
     });
+
+    const borrow = deleteResult?.value ?? deleteResult;
 
     if (!borrow) {
       return res.status(404).json({
-        message: "Borrowing record not found.",
-      });
-    }
-
-    const deleteResult = await borrowsCollection.deleteOne({
-      _id: new ObjectId(id),
-    });
-
-    if (deleteResult.deletedCount === 0) {
-      return res.status(404).json({
-        message: "Borrowing record not found.",
+        message: "Borrowing record not found or access denied.",
       });
     }
 
@@ -491,11 +524,12 @@ app.delete("/borrows/:id", async (req, res) => {
       { $inc: { availableCopies: 1 } }
     );
 
-    res.send({
+    res.status(200).json({
       message: "Book returned successfully.",
     });
   } catch (error) {
     console.error("Error returning book:", error);
+
     res.status(500).json({
       message: "Failed to return book.",
     });
@@ -503,7 +537,6 @@ app.delete("/borrows/:id", async (req, res) => {
 });
 
 // Local development server
-
 if (!process.env.VERCEL) {
   app.listen(port, () => {
     console.log(`BookNook server running on port ${port}`);
