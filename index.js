@@ -192,6 +192,86 @@ app.post("/books", async (req, res) => {
   }
 });
 
+
+// API 4: Update a book
+app.patch("/books/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "Invalid book ID",
+      });
+    }
+
+    const {
+      title,
+      author,
+      category,
+      image,
+      description,
+      totalCopies,
+      availableCopies,
+    } = req.body;
+
+    if (
+      !title?.trim() ||
+      !author?.trim() ||
+      !category ||
+      !image?.trim() ||
+      !description?.trim()
+    ) {
+      return res.status(400).json({
+        message: "Please provide all required book details.",
+      });
+    }
+
+    if (
+      !Number.isInteger(totalCopies) ||
+      totalCopies < 1 ||
+      !Number.isInteger(availableCopies) ||
+      availableCopies < 0 ||
+      availableCopies > totalCopies
+    ) {
+      return res.status(400).json({
+        message: "Invalid book copy information.",
+      });
+    }
+
+    const result = await db.collection("books").updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          title: title.trim(),
+          author: author.trim(),
+          category,
+          image: image.trim(),
+          description: description.trim(),
+          totalCopies,
+          availableCopies,
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        message: "Book not found",
+      });
+    }
+
+    res.status(200).json({
+      message: "Book updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating book:", error);
+
+    res.status(500).json({
+      message: "Failed to update book",
+    });
+  }
+});
+
+
 // Local development server
 if (!process.env.VERCEL) {
   app.listen(port, () => {
