@@ -119,6 +119,79 @@ app.get("/books/:id", async (req, res) => {
   }
 });
 
+// API 3: Add a new book
+app.post("/books", async (req, res) => {
+  try {
+    const {
+      title,
+      author,
+      category,
+      image,
+      description,
+      addedByName,
+      addedByEmail,
+      addedAt,
+      totalCopies,
+      availableCopies,
+    } = req.body;
+
+    if (
+      !title ||
+      !author ||
+      !category ||
+      !image ||
+      !description ||
+      !addedByName ||
+      !addedByEmail
+    ) {
+      return res.status(400).json({
+        message: "Please provide all required book details.",
+      });
+    }
+
+    if (
+      !Number.isInteger(totalCopies) ||
+      totalCopies < 1 ||
+      !Number.isInteger(availableCopies) ||
+      availableCopies < 1 ||
+      availableCopies > totalCopies
+    ) {
+      return res.status(400).json({
+        message: "Invalid book copy information.",
+      });
+    }
+
+    const newBook = {
+      title: title.trim(),
+      author: author.trim(),
+      category,
+      image: image.trim(),
+      description: description.trim(),
+      addedByName,
+      addedByEmail,
+      addedAt,
+      totalCopies,
+      availableCopies,
+    };
+
+    const result = await db.collection("books").insertOne(newBook);
+
+    res.status(201).json({
+      message: "Book added successfully",
+      book: {
+        ...newBook,
+        id: result.insertedId.toString(),
+      },
+    });
+  } catch (error) {
+    console.error("Error adding book:", error);
+
+    res.status(500).json({
+      message: "Failed to add book",
+    });
+  }
+});
+
 // Local development server
 if (!process.env.VERCEL) {
   app.listen(port, () => {
