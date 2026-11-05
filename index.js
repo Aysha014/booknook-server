@@ -63,19 +63,30 @@ app.use(async (req, res, next) => {
   }
 });
 
+
 // API 1: Get all books (Public)
 app.get("/books", async (req, res) => {
   try {
-    const books = await db
+    const limit = Number(req.query.limit);
+
+    let query = db
       .collection("books")
       .find()
-      .map((book) => ({
+      .sort({ addedAt: -1 });
+
+    // Apply limit only when a valid limit is requested
+    if (Number.isInteger(limit) && limit > 0) {
+      query = query.limit(limit);
+    }
+
+    const books = await query.toArray();
+
+    res.status(200).json(
+      books.map((book) => ({
         ...book,
         id: book._id.toString(),
       }))
-      .toArray();
-
-    res.status(200).json(books);
+    );
   } catch (error) {
     console.error("Error fetching books:", error);
 
