@@ -10,7 +10,10 @@ const port = process.env.PORT || 8000;
 // Middleware
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: [
+      process.env.CLIENT_URL,
+      "http://localhost:3000",
+    ].filter(Boolean),
     credentials: true,
   })
 );
@@ -21,22 +24,43 @@ app.use(express.json());
 const client = new MongoClient(process.env.MONGODB_URI);
 
 let db;
+let dbPromise;
 
-export async function connectToMongoDB() {
-  try {
-    await client.connect();
-    db = client.db("booknook");
-
-    console.log("Connected to MongoDB");
-  } catch (error) {
-    console.error("MongoDB connection failed:", error);
-    process.exit(1);
+async function connectToMongoDB() {
+  if (!dbPromise) {
+    dbPromise = client
+      .connect()
+      .then(() => {
+        console.log("Connected to MongoDB");
+        db = client.db("booknook");
+        return db;
+      })
+      .catch((error) => {
+        dbPromise = null;
+        throw error;
+      });
   }
+
+  return dbPromise;
 }
 
 // Root route
 app.get("/", (req, res) => {
   res.send("BookNook API is running!");
+});
+
+// Database connection middleware
+app.use(async (req, res, next) => {
+  try {
+    await connectToMongoDB();
+    next();
+  } catch (error) {
+    console.error("MongoDB connection failed:", error);
+
+    res.status(500).json({
+      message: "Database connection failed",
+    });
+  }
 });
 
 // API 1: Get all books (Public)
@@ -54,19 +78,53 @@ app.get("/books", async (req, res) => {
     res.status(200).json(books);
   } catch (error) {
     console.error("Error fetching books:", error);
+
     res.status(500).json({
       message: "Failed to fetch books",
     });
   }
 });
 
-// Start server
-async function startServer() {
-  await connectToMongoDB();
+// API 2: Get a single book by ID (Public)
+app.get("/books/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "Invalid book ID",
+      });
+    }
+
+    const book = await db.collection("books").findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!book) {
+      return res.status(404).json({
+        message: "Book not found",
+      });
+    }
+
+    res.status(200).json({
+      ...book,
+      id: book._id.toString(),
+    });
+  } catch (error) {
+    console.error("Error fetching book:", error);
+
+    res.status(500).json({
+      message: "Failed to fetch book",
+    });
+  }
+});
+
+// Local development server
+if (!process.env.VERCEL) {
   app.listen(port, () => {
     console.log(`BookNook server running on port ${port}`);
   });
 }
 
-startServer();
+// Export Express app for Vercel
+export default app;
