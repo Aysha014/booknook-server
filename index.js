@@ -408,7 +408,91 @@ app.post("/borrows", async (req, res) => {
 });
 
 
+
+// API 7: Get borrowed books
+app.get("/borrows", async (req, res) => {
+  
+  try {
+    const { userEmail } = req.query;
+
+    if (!userEmail) {
+      return res.status(400).json({
+        message: "User email is required.",
+      });
+    }
+
+    const borrows = await db
+      .collection("borrows")
+      .find({ userEmail })
+      .sort({ borrowDate: -1 })
+      .toArray();
+
+    res.send(
+      borrows.map((borrow) => ({
+        ...borrow,
+        id: borrow._id.toString(),
+      }))
+    );
+  } catch (error) {
+    console.error("Error fetching borrowed books:", error);
+    res.status(500).json({
+      message: "Failed to fetch borrowed books.",
+    });
+  }
+});
+
+// API 8: Return a borrowed book
+app.delete("/borrows/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: "Invalid borrow ID.",
+      });
+    }
+
+    const borrowsCollection = db.collection("borrows");
+    const booksCollection = db.collection("books");
+
+    const borrow = await borrowsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!borrow) {
+      return res.status(404).json({
+        message: "Borrowing record not found.",
+      });
+    }
+
+    const deleteResult = await borrowsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (deleteResult.deletedCount === 0) {
+      return res.status(404).json({
+        message: "Borrowing record not found.",
+      });
+    }
+
+    await booksCollection.updateOne(
+      { _id: new ObjectId(borrow.bookId) },
+      { $inc: { availableCopies: 1 } }
+    );
+
+    res.send({
+      message: "Book returned successfully.",
+    });
+  } catch (error) {
+    console.error("Error returning book:", error);
+    res.status(500).json({
+      message: "Failed to return book.",
+    });
+  }
+});
+
 // Local development server
+
 if (!process.env.VERCEL) {
   app.listen(port, () => {
     console.log(`BookNook server running on port ${port}`);
